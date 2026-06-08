@@ -1,0 +1,1782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhantomLens — Image Forensics</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/spark-md5@3.0.2/spark-md5.min.js"></script>
+<style>
+/* ── Design Tokens ──────────────────────────────────────────── */
+:root {
+  --bg:        #0c0d10;
+  --bg2:       #111318;
+  --bg3:       #191b21;
+  --bg4:       #1e2028;
+  --border:    #252830;
+  --border2:   #2e3240;
+  --gold:      #c9a84c;
+  --gold-dim:  rgba(201,168,76,0.18);
+  --gold-glow: rgba(201,168,76,0.06);
+  --steel:     #4a8fd6;
+  --steel-dim: rgba(74,143,214,0.15);
+  --text:      #dddde8;
+  --text-dim:  #7a7a8a;
+  --text-faint:#4a4a58;
+  --red:       #d95454;
+  --green:     #4fbd7c;
+  --amber:     #dba040;
+  --mono:      'JetBrains Mono', monospace;
+  --ui:        'Hanken Grotesk', sans-serif;
+  --r:         6px;
+  --r2:        10px;
+  --fs:        14px;   /* S=12 M=14 L=16 XL=19 */
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: var(--fs); scroll-behavior: smooth; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+::selection { background: var(--gold-dim); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg2); }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--gold-dim); }
+
+/* ── Layout ─────────────────────────────────────────────────── */
+.app-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 28px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 100;
+}
+.app-logo {
+  font-size: 1.15rem; font-weight: 700; letter-spacing: .04em;
+  color: var(--gold);
+}
+.app-logo span { color: var(--text-dim); font-weight: 300; font-size: .85em; }
+.header-divider { width: 1px; height: 22px; background: var(--border2); }
+.header-subtitle {
+  font-size: .78rem; color: var(--text-dim);
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+/* Font size controls */
+.fs-controls { display: flex; gap: 2px; }
+.fs-btn {
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--text-dim); cursor: pointer; border-radius: 4px;
+  padding: 3px 8px; font: 500 .7rem var(--ui); transition: all .15s;
+}
+.fs-btn:hover  { border-color: var(--border2); color: var(--text); }
+.fs-btn.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
+
+main { max-width: 1380px; margin: 0 auto; padding: 32px 24px; }
+
+/* ── Upload Zone ────────────────────────────────────────────── */
+#upload-zone { display: block; }
+#analysis-panel { display: none; }
+
+.upload-hero {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center;
+  padding: 60px 24px 40px;
+}
+.upload-hero h1 {
+  font-size: 2rem; font-weight: 700; letter-spacing: -.02em;
+  color: var(--gold); margin-bottom: 8px;
+}
+.upload-hero h1 span { color: var(--text-dim); font-weight: 300; }
+.upload-hero p { color: var(--text-dim); max-width: 520px; line-height: 1.7; margin-bottom: 40px; }
+
+.drop-card {
+  width: 100%; max-width: 700px; background: var(--bg2);
+  border: 2px dashed var(--border2);
+  border-radius: var(--r2); padding: 48px 32px;
+  cursor: pointer; transition: all .2s;
+  position: relative;
+}
+.drop-card:hover, .drop-card.drag-over {
+  border-color: var(--gold);
+  background: var(--gold-glow);
+  box-shadow: 0 0 40px var(--gold-glow);
+}
+.drop-icon { font-size: 3rem; margin-bottom: 16px; opacity: .6; }
+.drop-text { font-size: 1.1rem; font-weight: 500; margin-bottom: 6px; }
+.drop-sub { font-size: .82rem; color: var(--text-dim); }
+#file-input { display: none; }
+
+.or-divider {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; max-width: 700px; margin: 24px 0;
+  color: var(--text-faint); font-size: .78rem; letter-spacing: .12em;
+}
+.or-divider::before, .or-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+.url-row { display: flex; gap: 10px; width: 100%; max-width: 700px; }
+.url-input {
+  flex: 1; background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--r); color: var(--text); padding: 10px 14px;
+  font: .88rem var(--ui); outline: none; transition: border-color .15s;
+}
+.url-input::placeholder { color: var(--text-faint); }
+.url-input:focus { border-color: var(--gold); }
+.btn-primary {
+  background: var(--gold); color: var(--bg);
+  border: none; border-radius: var(--r); cursor: pointer;
+  font: 600 .85rem var(--ui); padding: 10px 20px;
+  transition: all .15s; white-space: nowrap;
+}
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-primary:disabled { opacity: .4; cursor: not-allowed; }
+
+.formats-note {
+  margin-top: 20px; font-size: .75rem; color: var(--text-faint);
+  text-align: center;
+}
+
+/* ── Error toast ────────────────────────────────────────────── */
+#toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: var(--bg3); border: 1px solid var(--red);
+  color: var(--red); padding: 10px 20px; border-radius: var(--r);
+  font-size: .82rem; z-index: 999; opacity: 0;
+  transition: opacity .3s; pointer-events: none;
+}
+#toast.show { opacity: 1; }
+
+/* ── Analysis Panel ─────────────────────────────────────────── */
+.panel-header {
+  display: flex; align-items: center; gap: 16px;
+  padding: 16px 20px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r2) var(--r2) 0 0;
+  flex-wrap: wrap; gap: 12px;
+}
+.file-pill {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 999px; padding: 5px 14px;
+  font-size: .8rem; color: var(--text-dim);
+}
+.file-pill strong { color: var(--text); font-weight: 500; }
+.file-dim { display: flex; gap: 20px; font-size: .78rem; color: var(--text-dim); }
+.file-dim b { color: var(--gold); font-weight: 500; }
+.btn-ghost {
+  background: none; border: 1px solid var(--border2);
+  border-radius: var(--r); color: var(--text-dim);
+  cursor: pointer; font: .78rem var(--ui); padding: 5px 12px;
+  transition: all .15s;
+}
+.btn-ghost:hover { border-color: var(--gold-dim); color: var(--gold); }
+
+/* ── Tab Navigation ─────────────────────────────────────────── */
+.tab-nav {
+  display: flex; gap: 0; overflow-x: auto; scrollbar-width: none;
+  background: var(--bg2); border: 1px solid var(--border);
+  border-top: none; padding: 0 16px;
+}
+.tab-nav::-webkit-scrollbar { display: none; }
+.tab-btn {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font: 500 .8rem var(--ui);
+  padding: 11px 16px; white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: all .15s; position: relative; letter-spacing: .02em;
+}
+.tab-btn:hover   { color: var(--text); }
+.tab-btn.active  {
+  color: var(--gold);
+  border-bottom-color: var(--gold);
+}
+.tab-badge {
+  display: inline-block; background: var(--gold-dim);
+  color: var(--gold); font-size: .65rem; font-weight: 600;
+  padding: 1px 5px; border-radius: 10px; margin-left: 5px;
+}
+
+.tab-panels {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-top: none; border-radius: 0 0 var(--r2) var(--r2);
+  min-height: 420px;
+}
+.tab-panel { display: none; padding: 24px; }
+.tab-panel.active { display: block; }
+
+/* ── Shared UI Components ───────────────────────────────────── */
+.section-title {
+  font-size: .7rem; font-weight: 600; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-faint);
+  border-bottom: 1px solid var(--border); padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+.kv-table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+.kv-table tr { border-bottom: 1px solid var(--border); }
+.kv-table tr:last-child { border-bottom: none; }
+.kv-table td { padding: 7px 0; vertical-align: top; }
+.kv-table td:first-child {
+  color: var(--text-dim); font: .78rem var(--mono);
+  width: 220px; padding-right: 20px;
+}
+.kv-table td:last-child { color: var(--text); word-break: break-all; }
+.kv-table td.highlight { color: var(--gold); font-weight: 500; }
+.kv-table td.url-val { color: var(--steel); }
+.kv-table td.url-val a { color: inherit; text-decoration: none; }
+.kv-table td.url-val a:hover { text-decoration: underline; }
+.kv-table td.warn-val { color: var(--amber); }
+.kv-table td.ok-val   { color: var(--green); }
+.kv-table td.bad-val  { color: var(--red); }
+
+.tag-group { margin-bottom: 24px; }
+.tag-group-title {
+  font-size: .75rem; font-weight: 600; color: var(--gold);
+  letter-spacing: .06em; text-transform: uppercase;
+  margin-bottom: 10px; display: flex; align-items: center; gap: 8px;
+}
+.count-badge {
+  background: var(--gold-dim); color: var(--gold);
+  font-size: .65rem; padding: 1px 6px; border-radius: 10px;
+}
+.no-data {
+  color: var(--text-dim); font-size: .85rem; font-style: italic;
+  padding: 24px 0;
+}
+.mono-block {
+  font: .78rem var(--mono); color: var(--text-dim);
+  word-break: break-all; line-height: 2;
+}
+.hash-row { display: flex; gap: 12px; align-items: center; margin-bottom: 10px; }
+.hash-label {
+  font: 600 .75rem var(--mono); color: var(--text-faint);
+  text-transform: uppercase; width: 60px; flex-shrink: 0;
+}
+.hash-val {
+  font: .78rem var(--mono); color: var(--text); flex: 1;
+  word-break: break-all; letter-spacing: .02em;
+}
+.copy-btn {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: 4px; color: var(--text-dim); cursor: pointer;
+  font: .68rem var(--ui); padding: 2px 8px; flex-shrink: 0;
+  transition: all .15s;
+}
+.copy-btn:hover { border-color: var(--gold); color: var(--gold); }
+.copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+/* ── ELA Panel ──────────────────────────────────────────────── */
+.ela-controls {
+  display: flex; gap: 16px; align-items: center;
+  padding: 12px 0 20px; flex-wrap: wrap;
+}
+.ctrl-group { display: flex; flex-direction: column; gap: 4px; }
+.ctrl-label { font-size: .7rem; color: var(--text-dim); letter-spacing: .06em; }
+.ctrl-row { display: flex; align-items: center; gap: 8px; }
+.slider {
+  -webkit-appearance: none; appearance: none;
+  background: var(--border2); border-radius: 4px;
+  height: 4px; outline: none; cursor: pointer;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 14px; height: 14px;
+  background: var(--gold); border-radius: 50%;
+}
+.slider-val { font: .78rem var(--mono); color: var(--gold); min-width: 32px; }
+.btn-run {
+  background: var(--gold-dim); border: 1px solid var(--gold);
+  color: var(--gold); border-radius: var(--r); cursor: pointer;
+  font: 600 .8rem var(--ui); padding: 7px 16px; transition: all .15s;
+}
+.btn-run:hover { background: var(--gold); color: var(--bg); }
+
+.ela-view {
+  position: relative; overflow: hidden; border-radius: var(--r);
+  border: 1px solid var(--border); user-select: none;
+  max-height: 600px; cursor: col-resize;
+}
+.ela-original, .ela-result {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+}
+.ela-original img, .ela-result canvas {
+  width: 100%; height: 100%; object-fit: contain;
+  display: block;
+}
+.ela-result { clip-path: inset(0 50% 0 0); }
+.ela-divider {
+  position: absolute; top: 0; height: 100%; width: 2px;
+  background: var(--gold); left: 50%;
+  display: flex; align-items: center; justify-content: center;
+}
+.ela-handle {
+  width: 28px; height: 28px; background: var(--gold);
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  color: var(--bg); font-size: .9rem; cursor: col-resize;
+  box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  position: relative; z-index: 10;
+}
+.ela-label {
+  position: absolute; bottom: 10px; font-size: .72rem;
+  background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: 4px;
+  pointer-events: none;
+}
+.ela-label.left  { left: 10px;  color: var(--text-dim); }
+.ela-label.right { right: 10px; color: var(--gold); }
+
+.ela-stats {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px; margin-top: 16px;
+}
+.stat-card {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 12px 14px;
+}
+.stat-label { font-size: .7rem; color: var(--text-dim); margin-bottom: 4px; }
+.stat-val { font: 500 1.1rem var(--mono); color: var(--text); }
+.stat-sub { font-size: .68rem; color: var(--text-faint); margin-top: 2px; }
+
+/* quality bar */
+.q-bar-wrap { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.q-bar { height: 100%; border-radius: 4px; transition: width .4s; }
+
+/* Quantization table grid */
+.quant-grid {
+  font: .72rem var(--mono); border-collapse: collapse;
+  margin-top: 10px;
+}
+.quant-grid td {
+  width: 36px; height: 28px; text-align: center;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+
+/* ── Metadata Panel ─────────────────────────────────────────── */
+.meta-tabs { display: flex; gap: 2px; margin-bottom: 18px; }
+.meta-tab {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--r); color: var(--text-dim);
+  cursor: pointer; font: 500 .78rem var(--ui);
+  padding: 5px 12px; transition: all .15s;
+}
+.meta-tab:hover  { color: var(--text); }
+.meta-tab.active { background: var(--gold-dim); border-color: var(--gold); color: var(--gold); }
+.meta-sub { display: none; }
+.meta-sub.active { display: block; }
+
+/* GPS map link */
+.map-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--steel-dim); border: 1px solid var(--steel);
+  border-radius: var(--r); color: var(--steel); font-size: .8rem;
+  padding: 6px 14px; text-decoration: none; margin-top: 12px;
+  transition: all .15s;
+}
+.map-link:hover { background: var(--steel); color: var(--bg); }
+
+/* ── Strings Panel ──────────────────────────────────────────── */
+.str-search {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--r); color: var(--text); padding: 8px 12px;
+  font: .83rem var(--ui); outline: none; width: 100%; max-width: 360px;
+  margin-bottom: 18px;
+}
+.str-search:focus { border-color: var(--gold); }
+.str-search::placeholder { color: var(--text-faint); }
+.str-item {
+  font: .78rem var(--mono); color: var(--text-dim);
+  padding: 4px 0; border-bottom: 1px solid var(--border);
+  word-break: break-all; transition: color .1s;
+}
+.str-item:last-child { border-bottom: none; }
+.str-item:hover { color: var(--text); }
+.str-item.url-item { color: var(--steel); }
+.str-item.sw-item  { color: var(--gold); }
+.str-item.date-item{ color: var(--text); }
+.str-more { color: var(--text-faint); font-size: .74rem; margin-top: 8px; font-style: italic; }
+
+/* ── Hidden Pixels Panel ────────────────────────────────────── */
+.hp-vis {
+  display: flex; gap: 16px; align-items: flex-start;
+  flex-wrap: wrap; margin-top: 16px;
+}
+.hp-canvas-wrap {
+  border: 1px solid var(--border); border-radius: var(--r);
+  overflow: hidden;
+}
+.hp-canvas-wrap canvas { display: block; max-width: 100%; }
+.hp-legend { font-size: .78rem; }
+.hp-color-dot { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+
+/* ── ICC Panel ──────────────────────────────────────────────── */
+.icc-badge {
+  display: inline-block; background: var(--steel-dim);
+  border: 1px solid var(--steel); color: var(--steel);
+  font-size: .72rem; padding: 3px 10px; border-radius: 999px;
+  margin-bottom: 16px;
+}
+
+/* ── Progress overlay ───────────────────────────────────────── */
+#progress-overlay {
+  position: fixed; inset: 0;
+  background: rgba(12,13,16,.85);
+  display: none; flex-direction: column;
+  align-items: center; justify-content: center; z-index: 200;
+}
+#progress-overlay.show { display: flex; }
+.progress-box {
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: var(--r2); padding: 32px 40px; text-align: center;
+  min-width: 280px;
+}
+.progress-spinner {
+  width: 36px; height: 36px;
+  border: 3px solid var(--border2); border-top-color: var(--gold);
+  border-radius: 50%; animation: spin .8s linear infinite;
+  margin: 0 auto 16px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.progress-label { color: var(--gold); font-size: .9rem; font-weight: 500; }
+.progress-sub   { color: var(--text-dim); font-size: .78rem; margin-top: 6px; }
+.progress-steps { margin-top: 18px; display: flex; flex-direction: column; gap: 6px; }
+.progress-step  { font-size: .75rem; color: var(--text-faint); display: flex; align-items: center; gap: 8px; }
+.progress-step.done  { color: var(--green); }
+.progress-step.running { color: var(--gold); }
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media(max-width:700px){
+  .url-row { flex-direction: column; }
+  .ela-controls { flex-direction: column; align-items: flex-start; }
+  .panel-header { gap: 8px; }
+  .kv-table td:first-child { width: 140px; }
+}
+
+/* ── Utility ─────────────────────────────────────────────────── */
+.flex-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.text-gold  { color: var(--gold); }
+.text-steel { color: var(--steel); }
+.text-dim   { color: var(--text-dim); }
+.text-green { color: var(--green); }
+.text-amber { color: var(--amber); }
+.text-red   { color: var(--red); }
+.mono       { font-family: var(--mono); }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ───────────────────────────────────────────────── -->
+<header class="app-header">
+  <div class="app-logo">PhantomLens <span>/ image forensics</span></div>
+  <div class="header-divider"></div>
+  <div class="header-subtitle">FotoForensics + Hintfo · Local Edition</div>
+  <div class="header-right">
+    <div class="fs-controls">
+      <button class="fs-btn" data-fs="12">S</button>
+      <button class="fs-btn active" data-fs="14">M</button>
+      <button class="fs-btn" data-fs="16">L</button>
+      <button class="fs-btn" data-fs="19">XL</button>
+    </div>
+  </div>
+</header>
+
+<!-- ── Upload Zone ───────────────────────────────────────────── -->
+<main>
+<div id="upload-zone">
+  <div class="upload-hero">
+    <h1>Phantom<span>Lens</span></h1>
+    <p>Client-side forensic image analysis — ELA, metadata, hidden pixels, JPEG quality,
+       string extraction, ICC profiles, and more. Nothing leaves your browser.</p>
+
+    <div class="drop-card" id="drop-card">
+      <div class="drop-icon">🔍</div>
+      <div class="drop-text">Drop an image here, or click to upload</div>
+      <div class="drop-sub">JPEG · PNG · WebP · HEIC · AVIF</div>
+      <input type="file" id="file-input" accept="image/*">
+    </div>
+
+    <div class="or-divider">OR</div>
+
+    <div class="url-row">
+      <input class="url-input" id="url-input" type="url"
+             placeholder="https://example.com/image.jpg"
+             spellcheck="false">
+      <button class="btn-primary" id="url-btn">Analyze URL</button>
+    </div>
+    <div class="formats-note">
+      URL images are fetched via a CORS proxy (corsproxy.io) — do not use for sensitive material.
+      For privacy, use the file upload instead.
+    </div>
+  </div>
+</div>
+
+<!-- ── Analysis Panel ────────────────────────────────────────── -->
+<div id="analysis-panel">
+  <div class="panel-header">
+    <div class="file-pill">
+      <span>📄</span>
+      <strong id="ph-filename">—</strong>
+    </div>
+    <div class="file-dim">
+      <span><b id="ph-format">—</b> format</span>
+      <span><b id="ph-dims">—</b></span>
+      <span><b id="ph-size">—</b></span>
+    </div>
+    <div style="margin-left:auto; display:flex; gap:8px;">
+      <button class="btn-ghost" id="export-btn">Export JSON</button>
+      <button class="btn-ghost" id="reset-btn">← New Image</button>
+    </div>
+  </div>
+
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="ela">ELA</button>
+    <button class="tab-btn" data-tab="metadata">Metadata</button>
+    <button class="tab-btn" data-tab="digest">Digest</button>
+    <button class="tab-btn" data-tab="strings">Strings</button>
+    <button class="tab-btn" data-tab="hidden">Hidden Pixels</button>
+    <button class="tab-btn" data-tab="jpeg">JPEG Quality</button>
+    <button class="tab-btn" data-tab="icc">ICC Profile</button>
+  </nav>
+
+  <div class="tab-panels">
+
+    <!-- ── Overview ──────────────────────────────────────────── -->
+    <div class="tab-panel active" id="tab-overview">
+      <div class="section-title">File Overview</div>
+      <table class="kv-table" id="overview-table"></table>
+      <div style="margin-top:24px;" class="section-title">Quick Analysis Summary</div>
+      <div id="summary-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:4px;"></div>
+      <div style="margin-top:24px;" class="section-title">Original Image</div>
+      <div style="margin-top:8px;border:1px solid var(--border);border-radius:var(--r);overflow:hidden;max-height:400px;text-align:center;background:var(--bg3);">
+        <img id="original-preview" style="max-width:100%;max-height:400px;object-fit:contain;" alt="Preview">
+      </div>
+    </div>
+
+    <!-- ── ELA ───────────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-ela">
+      <div class="section-title">Error Level Analysis</div>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:16px;">
+        ELA highlights regions with different JPEG compression levels.
+        Bright areas may indicate editing or re-saving at a different quality.
+        Compare surfaces to surfaces and edges to edges — not everything bright is manipulated.
+      </p>
+      <div class="ela-controls">
+        <div class="ctrl-group">
+          <div class="ctrl-label">RESAVE QUALITY</div>
+          <div class="ctrl-row">
+            <input type="range" class="slider" id="ela-quality" min="60" max="99" value="95" style="width:120px;">
+            <span class="slider-val" id="ela-quality-val">95%</span>
+          </div>
+        </div>
+        <div class="ctrl-group">
+          <div class="ctrl-label">AMPLIFICATION</div>
+          <div class="ctrl-row">
+            <input type="range" class="slider" id="ela-scale" min="1" max="30" value="10" style="width:120px;">
+            <span class="slider-val" id="ela-scale-val">10×</span>
+          </div>
+        </div>
+        <button class="btn-run" id="ela-run">Run ELA</button>
+        <button class="btn-ghost" id="ela-download" style="display:none">Download ELA</button>
+      </div>
+
+      <div id="ela-container" style="position:relative;">
+        <div class="ela-view" id="ela-view" style="height:480px;background:var(--bg3);">
+          <div class="ela-original">
+            <img id="ela-orig-img" style="width:100%;height:100%;object-fit:contain;" alt="Original">
+          </div>
+          <div class="ela-result" id="ela-result-clip">
+            <canvas id="ela-canvas" style="width:100%;height:100%;object-fit:contain;"></canvas>
+          </div>
+          <div class="ela-divider" id="ela-divider" style="left:50%;">
+            <div class="ela-handle">⇔</div>
+          </div>
+          <div class="ela-label left">Original</div>
+          <div class="ela-label right">ELA</div>
+        </div>
+        <div id="ela-loading" style="display:none;position:absolute;inset:0;display:none;background:rgba(12,13,16,.7);align-items:center;justify-content:center;border-radius:var(--r);">
+          <div style="color:var(--gold);font-size:.9rem;">Computing ELA…</div>
+        </div>
+      </div>
+
+      <div class="ela-stats" id="ela-stats" style="margin-top:16px;"></div>
+    </div>
+
+    <!-- ── Metadata ───────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-metadata">
+      <div class="section-title">Image Metadata</div>
+      <div class="meta-tabs">
+        <button class="meta-tab active" data-meta="exif">EXIF</button>
+        <button class="meta-tab" data-meta="gps">GPS</button>
+        <button class="meta-tab" data-meta="xmp">XMP</button>
+        <button class="meta-tab" data-meta="iptc">IPTC</button>
+        <button class="meta-tab" data-meta="raw">All Fields</button>
+      </div>
+      <div id="meta-exif" class="meta-sub active"></div>
+      <div id="meta-gps"  class="meta-sub"></div>
+      <div id="meta-xmp"  class="meta-sub"></div>
+      <div id="meta-iptc" class="meta-sub"></div>
+      <div id="meta-raw"  class="meta-sub"></div>
+    </div>
+
+    <!-- ── Digest ─────────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-digest">
+      <div class="section-title">File Hashes / Digest</div>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:20px;">
+        Use these hashes to verify file integrity and establish chain of custody.
+        MD5 is provided for legacy compatibility; SHA-256 or SHA-512 are preferred for forensic use.
+      </p>
+      <div id="digest-content"></div>
+      <div style="margin-top:24px;" class="section-title">File Signature</div>
+      <div id="file-sig"></div>
+    </div>
+
+    <!-- ── Strings ───────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-strings">
+      <div class="section-title">String Extraction</div>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:16px;">
+        Printable ASCII sequences embedded in the raw file bytes.
+        May reveal software signatures, file paths, timestamps, and URLs.
+      </p>
+      <input class="str-search" id="str-search" type="text" placeholder="Filter strings…">
+      <div id="strings-content"></div>
+    </div>
+
+    <!-- ── Hidden Pixels ──────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-hidden">
+      <div class="section-title">Hidden Pixel Analysis</div>
+      <p style="font-size:.82rem;color:var(--text-dim);margin-bottom:16px;">
+        Reveals non-zero RGB values in fully transparent (alpha = 0) regions.
+        These can expose which software created or edited the image even after metadata stripping.
+      </p>
+      <div id="hidden-content"></div>
+    </div>
+
+    <!-- ── JPEG Quality ───────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-jpeg">
+      <div class="section-title">JPEG Quality Analysis</div>
+      <div id="jpeg-content"></div>
+    </div>
+
+    <!-- ── ICC Profile ───────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-icc">
+      <div class="section-title">ICC Color Profile</div>
+      <div id="icc-content"></div>
+    </div>
+
+  </div><!-- /.tab-panels -->
+</div><!-- /#analysis-panel -->
+</main>
+
+<!-- ── Progress Overlay ──────────────────────────────────────── -->
+<div id="progress-overlay">
+  <div class="progress-box">
+    <div class="progress-spinner"></div>
+    <div class="progress-label">Analyzing image…</div>
+    <div class="progress-sub">All processing is local — nothing is uploaded</div>
+    <div class="progress-steps" id="progress-steps"></div>
+  </div>
+</div>
+
+<!-- ── Toast ─────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────
+let STATE = {
+  arrayBuffer: null,
+  filename: '',
+  blobUrl: '',
+  results: {},
+  elaCanvas: null,
+  allStrings: [],
+};
+
+// ── Font size controls ─────────────────────────────────────────
+document.querySelectorAll('.fs-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.fs-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.documentElement.style.setProperty('--fs', btn.dataset.fs + 'px');
+  });
+});
+
+// ── Toast ──────────────────────────────────────────────────────
+let toastTimer = null;
+function toast(msg, duration = 3000) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), duration);
+}
+
+// ── Copy util ──────────────────────────────────────────────────
+function copyText(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    if (btn) { btn.textContent = 'Copied!'; btn.classList.add('copied'); }
+    setTimeout(() => { if (btn) { btn.textContent = 'Copy'; btn.classList.remove('copied'); } }, 1800);
+  }).catch(() => toast('Copy failed'));
+}
+
+// ── Progress ───────────────────────────────────────────────────
+const STEPS = ['Loading image', 'Hashes (MD5 / SHA)', 'JPEG quality tables',
+               'Error level analysis', 'Metadata (EXIF/XMP/IPTC/GPS)',
+               'Hidden pixel analysis', 'String extraction'];
+
+function showProgress() {
+  const ol = document.getElementById('progress-steps');
+  ol.innerHTML = STEPS.map((s, i) =>
+    `<div class="progress-step" id="pstep-${i}">○  ${s}</div>`
+  ).join('');
+  document.getElementById('progress-overlay').classList.add('show');
+}
+function stepDone(i) {
+  const el = document.getElementById(`pstep-${i}`);
+  if (el) { el.classList.add('done'); el.textContent = '✓  ' + STEPS[i]; }
+}
+function stepRun(i) {
+  const el = document.getElementById(`pstep-${i}`);
+  if (el) { el.classList.add('running'); el.textContent = '→  ' + STEPS[i]; }
+}
+function hideProgress() {
+  document.getElementById('progress-overlay').classList.remove('show');
+}
+
+// ── File / URL loading ─────────────────────────────────────────
+document.getElementById('drop-card').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+});
+
+const dropCard = document.getElementById('drop-card');
+dropCard.addEventListener('dragover', e => { e.preventDefault(); dropCard.classList.add('drag-over'); });
+dropCard.addEventListener('dragleave', () => dropCard.classList.remove('drag-over'));
+dropCard.addEventListener('drop', e => {
+  e.preventDefault(); dropCard.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f) loadFile(f);
+});
+
+document.getElementById('url-btn').addEventListener('click', () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { toast('Please enter a URL'); return; }
+  loadUrl(url);
+});
+document.getElementById('url-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('url-btn').click();
+});
+
+async function loadFile(file) {
+  STATE.filename = file.name;
+  const buf = await file.arrayBuffer();
+  STATE.arrayBuffer = buf;
+  STATE.blobUrl = URL.createObjectURL(new Blob([buf], { type: file.type }));
+  await runAnalyses();
+}
+
+async function loadUrl(url) {
+  try {
+    showProgress();
+    const proxy = `https://corsproxy.io/?url=${encodeURIComponent(url)}`;
+    const resp = await fetch(proxy);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const buf  = await blob.arrayBuffer();
+    STATE.arrayBuffer = buf;
+    STATE.filename = url.split('/').pop().split('?')[0] || 'remote-image';
+    STATE.blobUrl = URL.createObjectURL(blob);
+    await runAnalyses();
+  } catch (err) {
+    hideProgress();
+    toast(`Failed to load URL: ${err.message}`);
+  }
+}
+
+// ── Load image element from blob URL ──────────────────────────
+function loadImgEl(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload  = () => res(img);
+    img.onerror = () => rej(new Error('Image decode failed'));
+    img.src = src;
+  });
+}
+
+// ── MD5 (SparkMD5) ────────────────────────────────────────────
+async function md5Hex(buf) {
+  return SparkMD5.ArrayBuffer.hash(buf);
+}
+
+// ── SHA hash via SubtleCrypto ─────────────────────────────────
+async function shaHex(buf, algo) {
+  const hashBuf = await crypto.subtle.digest(algo, buf);
+  return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// ── ELA ───────────────────────────────────────────────────────
+async function computeELA(imgEl, quality = 0.95, scale = 10) {
+  const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+  const c1 = document.createElement('canvas');
+  c1.width = W; c1.height = H;
+  const x1 = c1.getContext('2d');
+  x1.drawImage(imgEl, 0, 0);
+  const orig = x1.getImageData(0, 0, W, H);
+
+  // Re-encode as JPEG at given quality
+  const blob = await new Promise(r => c1.toBlob(r, 'image/jpeg', quality));
+  const reURL = URL.createObjectURL(blob);
+  const reImg = await loadImgEl(reURL);
+  URL.revokeObjectURL(reURL);
+
+  const c2 = document.createElement('canvas');
+  c2.width = W; c2.height = H;
+  const x2 = c2.getContext('2d');
+  x2.drawImage(reImg, 0, 0);
+  const re = x2.getImageData(0, 0, W, H);
+
+  // Compute amplified difference
+  const elaC = document.createElement('canvas');
+  elaC.width = W; elaC.height = H;
+  const ex = elaC.getContext('2d');
+  const elaD = ex.createImageData(W, H);
+  const d = elaD.data;
+  const od = orig.data, rd = re.data;
+
+  let total = 0, maxV = 0;
+  for (let i = 0; i < od.length; i += 4) {
+    const dr = Math.min(255, Math.abs(od[i]   - rd[i])   * scale);
+    const dg = Math.min(255, Math.abs(od[i+1] - rd[i+1]) * scale);
+    const db = Math.min(255, Math.abs(od[i+2] - rd[i+2]) * scale);
+    d[i] = dr; d[i+1] = dg; d[i+2] = db; d[i+3] = 255;
+    const lum = (dr + dg + db) / 3;
+    total += lum;
+    if (lum > maxV) maxV = lum;
+  }
+
+  ex.putImageData(elaD, 0, 0);
+  const avg = total / (W * H);
+  return { canvas: elaC, avg: +avg.toFixed(2), max: +maxV.toFixed(0), W, H };
+}
+
+// ── JPEG quant table parser ───────────────────────────────────
+function parseJpegQuantTables(buf) {
+  const view = new DataView(buf);
+  const tables = {};
+  if (view.byteLength < 2 || view.getUint16(0) !== 0xFFD8) return tables;
+
+  let pos = 2;
+  while (pos < view.byteLength - 3) {
+    const marker = view.getUint16(pos);
+    if (marker === 0xFFD9) break;
+
+    if (marker === 0xFFDB) {
+      const len = view.getUint16(pos + 2);
+      let off = pos + 4, remaining = len - 2;
+      while (remaining > 0) {
+        if (off >= view.byteLength) break;
+        const pqtq = view.getUint8(off++); remaining--;
+        const precision = (pqtq >> 4) & 0xF;
+        const id = pqtq & 0xF;
+        const tbl = [];
+        for (let i = 0; i < 64 && remaining > 0; i++) {
+          if (precision === 0) {
+            tbl.push(view.getUint8(off)); off++; remaining--;
+          } else {
+            tbl.push(view.getUint16(off)); off += 2; remaining -= 2;
+          }
+        }
+        tables[id] = tbl;
+      }
+      pos += 2 + len;
+    } else if ((marker & 0xFF00) === 0xFF00) {
+      if (pos + 3 >= view.byteLength) break;
+      const len = view.getUint16(pos + 2);
+      pos += 2 + len;
+    } else {
+      pos++;
+    }
+  }
+  return tables;
+}
+
+const LUM_Q50 = [
+  16,11,10,16,24,40,51,61, 12,12,14,19,26,58,60,55,
+  14,13,16,24,40,57,69,56, 14,17,22,29,51,87,80,62,
+  18,22,37,56,68,109,103,77, 24,35,55,64,81,104,113,92,
+  49,64,78,87,103,121,120,101, 72,92,95,98,112,100,103,99
+];
+
+function estimateJpegQuality(tables) {
+  if (!tables[0]) return null;
+  const lum = tables[0];
+  const ratios = lum.map((v,i) => LUM_Q50[i] > 0 ? v / LUM_Q50[i] : 1);
+  const avg = ratios.reduce((a,b) => a+b, 0) / ratios.length;
+  const scale = avg * 100;
+  let q = scale > 100 ? Math.round((200 - scale) / 2) : Math.round(5000 / scale);
+  return Math.max(1, Math.min(100, q));
+}
+
+// ── String extraction ──────────────────────────────────────────
+function extractStrings(buf, minLen = 4) {
+  const bytes = new Uint8Array(buf);
+  const out = [];
+  let cur = '';
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
+    if (b >= 32 && b < 127) {
+      cur += String.fromCharCode(b);
+    } else {
+      if (cur.length >= minLen) out.push(cur);
+      cur = '';
+    }
+  }
+  if (cur.length >= minLen) out.push(cur);
+  // Deduplicate
+  return [...new Set(out)];
+}
+
+function categorizeStrings(strings) {
+  const cat = { urls:[], emails:[], software:[], dates:[], paths:[], copyright:[], gps:[], other:[] };
+  const _url   = /https?:\/\/[^\s<>"]{4,}/g;
+  const _email = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/;
+  const _date  = /\d{4}[:/.\-]\d{2}[:/.\-]\d{2}/;
+  const _path  = /(?:\/[a-zA-Z0-9._\-]{2,}){2,}|[A-Z]:\\[^\n]{3,}/;
+  const _gps   = /GPS|latitude|longitude|coord|geotag/i;
+  const _copy  = /copyright|©|\(c\)|rights\s+reserved/i;
+  const _sw    = /adobe|photoshop|lightroom|gimp|procreate|illustrator|affinity|capture\s?one|paintshop|paint\.net|imagemagick|exiftool|snapseed|vsco|picsart|pixelmator|darktable|luminar|rawtherapee|halide|iphone|android|samsung|apple|google/i;
+
+  for (const s of strings) {
+    if (_url.test(s)) {
+      for (const u of s.matchAll(/https?:\/\/[^\s<>"]{4,}/g)) cat.urls.push(u[0]);
+    } else if (_email.test(s)) {
+      cat.emails.push(s);
+    } else if (_date.test(s) && s.length < 60) {
+      cat.dates.push(s);
+    } else if (_path.test(s)) {
+      cat.paths.push(s);
+    } else if (_gps.test(s)) {
+      cat.gps.push(s);
+    } else if (_copy.test(s)) {
+      cat.copyright.push(s);
+    } else if (_sw.test(s)) {
+      cat.software.push(s);
+    } else {
+      cat.other.push(s);
+    }
+  }
+  return cat;
+}
+
+// ── Hidden pixels ──────────────────────────────────────────────
+async function analyzeHiddenPixels(imgEl) {
+  if (imgEl.naturalWidth === 0) return { hasAlpha: false };
+  const W = imgEl.naturalWidth, H = imgEl.naturalHeight;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(imgEl, 0, 0);
+  const data = ctx.getImageData(0, 0, W, H).data;
+
+  let hidden = 0, semi = 0, transparent = 0;
+  const colorFreq = {};
+
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i+3];
+    if (a === 0) {
+      transparent++;
+      const r = data[i], g = data[i+1], b = data[i+2];
+      if (r || g || b) {
+        hidden++;
+        const key = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+        colorFreq[key] = (colorFreq[key] || 0) + 1;
+      }
+    } else if (a < 255) semi++;
+  }
+
+  const topColors = Object.entries(colorFreq).sort((a,b) => b[1]-a[1]).slice(0,12);
+
+  // Render hidden pixels visualization
+  let visCanvas = null;
+  if (hidden > 0) {
+    visCanvas = document.createElement('canvas');
+    const scale = Math.min(1, 400 / Math.max(W, H));
+    visCanvas.width  = Math.round(W * scale);
+    visCanvas.height = Math.round(H * scale);
+    const vc = visCanvas.getContext('2d');
+    const vd = vc.createImageData(visCanvas.width, visCanvas.height);
+
+    for (let y = 0; y < visCanvas.height; y++) {
+      for (let x = 0; x < visCanvas.width; x++) {
+        const sx = Math.floor(x / scale), sy = Math.floor(y / scale);
+        const si = (sy * W + sx) * 4;
+        const di = (y * visCanvas.width + x) * 4;
+        const a = data[si+3];
+        if (a === 0 && (data[si] || data[si+1] || data[si+2])) {
+          vd.data[di]   = data[si];
+          vd.data[di+1] = data[si+1];
+          vd.data[di+2] = data[si+2];
+          vd.data[di+3] = 255;
+        } else {
+          vd.data[di]   = 30;
+          vd.data[di+1] = 31;
+          vd.data[di+2] = 40;
+          vd.data[di+3] = 255;
+        }
+      }
+    }
+    vc.putImageData(vd, 0, 0);
+  }
+
+  return { hasAlpha: true, transparent, hidden, semi, topColors, visCanvas, totalPixels: W * H };
+}
+
+// ── ICC parser (basic from raw bytes) ──────────────────────────
+function parseICC(buf) {
+  const view = new DataView(buf);
+  const uint = new Uint8Array(buf);
+
+  if (view.byteLength < 128) return null;
+
+  const profileSize = view.getUint32(0, false);
+  const cmm = String.fromCharCode(...uint.slice(4,8)).replace(/\x00/g,'').trim();
+  const verMaj = uint[8], verMin = (uint[9] >> 4) & 0xF;
+
+  const classMap = {
+    'scnr': 'Input (scanner/camera)', 'mntr': 'Monitor / Display',
+    'prtr': 'Output (printer)',        'link': 'DeviceLink',
+    'spac': 'ColorSpace conversion',   'abst': 'Abstract',
+    'nmcl': 'NamedColor',
+  };
+  const csMap = {
+    'XYZ ': 'CIE XYZ', 'Lab ': 'CIE L*a*b*', 'Luv ': 'CIE LUV',
+    'YCbr': 'YCbCr', 'Yxy ': 'CIE Yxy', 'RGB ': 'RGB',
+    'GRAY': 'Grayscale', 'HSV ': 'HSV', 'HLS ': 'HLS',
+    'CMYK': 'CMYK', 'CMY ': 'CMY',
+  };
+  const riMap = {0:'Perceptual',1:'Relative Colorimetric',2:'Saturation',3:'Absolute Colorimetric'};
+
+  const cls  = String.fromCharCode(...uint.slice(12,16));
+  const cs   = String.fromCharCode(...uint.slice(16,20));
+  const pcs  = String.fromCharCode(...uint.slice(20,24));
+  const ri   = view.getUint32(64, false);
+
+  let description = '';
+  if (view.byteLength >= 132) {
+    const tagCount = view.getUint32(128, false);
+    for (let i = 0; i < Math.min(tagCount, 100); i++) {
+      const off = 132 + i * 12;
+      if (off + 12 > view.byteLength) break;
+      const sig     = String.fromCharCode(...uint.slice(off, off+4));
+      const tagOff  = view.getUint32(off+4, false);
+      const tagSize = view.getUint32(off+8, false);
+
+      if ((sig === 'desc' || sig === 'mluc') && tagOff + tagSize <= view.byteLength) {
+        const td = uint.slice(tagOff, tagOff + tagSize);
+        try {
+          if (sig === 'desc' && td.length > 12) {
+            const cnt = new DataView(td.buffer).getUint32(8, false);
+            description = new TextDecoder('ascii').decode(td.slice(12, 12 + cnt)).replace(/\x00/g,'').trim();
+          } else if (sig === 'mluc' && td.length > 16) {
+            description = new TextDecoder('utf-16-be').decode(td.slice(16)).replace(/\x00/g,'').trim();
+          }
+        } catch(e){}
+        if (description) break;
+      }
+    }
+  }
+
+  return {
+    profileSize,
+    cmm,
+    version: `${verMaj}.${verMin}`,
+    profileClass: classMap[cls.trim()] || cls.trim(),
+    colorspace: csMap[cs] || cs.trim(),
+    pcs: csMap[pcs] || pcs.trim(),
+    renderingIntent: riMap[ri] || ri.toString(),
+    description: description || '(no description)',
+    sizeBytes: buf.byteLength,
+  };
+}
+
+// ── File magic/signature ───────────────────────────────────────
+function fileSignature(buf) {
+  const bytes = new Uint8Array(buf.slice(0, 12));
+  const hex = Array.from(bytes).map(b => b.toString(16).padStart(2,'0').toUpperCase()).join(' ');
+  const sigs = [
+    [[0xFF,0xD8,0xFF],            'JPEG Image'],
+    [[0x89,0x50,0x4E,0x47],       'PNG Image'],
+    [[0x47,0x49,0x46],            'GIF Image'],
+    [[0x52,0x49,0x46,0x46],       'WebP Image (RIFF)'],
+    [[0x49,0x49,0x2A,0x00],       'TIFF (little-endian)'],
+    [[0x4D,0x4D,0x00,0x2A],       'TIFF (big-endian)'],
+    [[0x00,0x00,0x00,0x08,0x4A,0x58,0x4C,0x20], 'JPEG XL'],
+    [[0x00,0x00,0x00,0x0C,0x6A,0x50,0x20,0x20], 'JPEG 2000'],
+  ];
+  let format = 'Unknown';
+  for (const [sig, name] of sigs) {
+    if (sig.every((b,i) => bytes[i] === b)) { format = name; break; }
+  }
+  return { hex, format };
+}
+
+// ── Main analysis runner ───────────────────────────────────────
+async function runAnalyses() {
+  showProgress();
+  const buf = STATE.arrayBuffer;
+
+  try {
+    // Step 0: Load image
+    stepRun(0);
+    const imgEl = await loadImgEl(STATE.blobUrl);
+    stepDone(0);
+
+    // Step 1: Hashes
+    stepRun(1);
+    const [md5, sha1, sha256, sha512] = await Promise.all([
+      md5Hex(buf),
+      shaHex(buf, 'SHA-1'),
+      shaHex(buf, 'SHA-256'),
+      shaHex(buf, 'SHA-512'),
+    ]);
+    const digest = { md5, sha1, sha256, sha512 };
+    stepDone(1);
+
+    // Step 2: JPEG quality
+    stepRun(2);
+    const quantTables = parseJpegQuantTables(buf);
+    const jpegQuality = estimateJpegQuality(quantTables);
+    stepDone(2);
+
+    // Step 3: ELA (deferred to user click after initial display)
+    stepRun(3);
+    const elaResult = await computeELA(imgEl, 0.95, 10);
+    STATE.elaCanvas = elaResult.canvas;
+    stepDone(3);
+
+    // Step 4: Metadata via exifr
+    stepRun(4);
+    let metadata = {};
+    try {
+      metadata = await exifr.parse(buf, {
+        tiff: true, xmp: true, iptc: true, icc: true, gps: true,
+        jfif: true, ihdr: true, sanitize: false,
+        reviveValues: true, translateKeys: true, translateValues: true,
+        mergeOutput: false,
+      }) || {};
+    } catch(e) { console.warn('exifr:', e); }
+    stepDone(4);
+
+    // Step 5: Hidden pixels
+    stepRun(5);
+    const hiddenResult = await analyzeHiddenPixels(imgEl);
+    stepDone(5);
+
+    // Step 6: Strings
+    stepRun(6);
+    const rawStrings = extractStrings(buf);
+    const strCat = categorizeStrings(rawStrings);
+    STATE.allStrings = rawStrings;
+    stepDone(6);
+
+    // ICC from metadata icc segment
+    let iccInfo = null;
+    if (metadata.icc) {
+      // exifr returns parsed icc data
+      iccInfo = metadata.icc;
+    }
+
+    // File signature
+    const sigInfo = fileSignature(buf);
+
+    STATE.results = {
+      imgEl, digest, jpegQuality, quantTables, elaResult,
+      metadata, hiddenResult, strCat, rawStrings, iccInfo, sigInfo,
+      filename: STATE.filename,
+      dims: { w: imgEl.naturalWidth, h: imgEl.naturalHeight },
+      sizeBytes: buf.byteLength,
+    };
+
+    hideProgress();
+    renderResults();
+    switchView('analysis');
+  } catch(err) {
+    hideProgress();
+    toast(`Analysis error: ${err.message}`);
+    console.error(err);
+  }
+}
+
+// ── Render results ────────────────────────────────────────────
+function renderResults() {
+  const R = STATE.results;
+  const { imgEl, dims, sizeBytes, filename } = R;
+
+  // ── Panel header
+  document.getElementById('ph-filename').textContent = filename;
+  const fmtGuess = R.sigInfo?.format || 'Unknown';
+  document.getElementById('ph-format').textContent = fmtGuess;
+  document.getElementById('ph-dims').textContent = `${dims.w.toLocaleString()} × ${dims.h.toLocaleString()} px`;
+  document.getElementById('ph-size').textContent = formatBytes(sizeBytes);
+
+  // ── Overview
+  document.getElementById('original-preview').src = STATE.blobUrl;
+  const ovRows = [
+    ['Filename',     filename],
+    ['File size',    formatBytes(sizeBytes)],
+    ['Dimensions',   `${dims.w.toLocaleString()} × ${dims.h.toLocaleString()} px`],
+    ['Megapixels',   ((dims.w * dims.h) / 1e6).toFixed(2) + ' MP'],
+    ['File format',  R.sigInfo?.format || 'Unknown'],
+    ['Magic bytes',  R.sigInfo?.hex || '—'],
+    ['MD5',          R.digest.md5],
+    ['SHA-256',      R.digest.sha256],
+  ];
+  document.getElementById('overview-table').innerHTML = ovRows.map(([k,v]) =>
+    `<tr><td>${k}</td><td class="mono">${escH(String(v))}</td></tr>`
+  ).join('');
+
+  renderSummaryCards();
+
+  // ── ELA setup
+  document.getElementById('ela-orig-img').src = STATE.blobUrl;
+  const elaC = STATE.elaCanvas;
+  const vc = document.getElementById('ela-canvas');
+  vc.width = elaC.width; vc.height = elaC.height;
+  vc.getContext('2d').drawImage(elaC, 0, 0);
+  renderElaStats(R.elaResult);
+  setupElaScrubber();
+  setupElaControls();
+
+  // ── Metadata
+  renderMetadata(R.metadata);
+
+  // ── Digest
+  renderDigest(R.digest, R.sigInfo);
+
+  // ── Strings
+  renderStrings(R.strCat, R.rawStrings);
+
+  // ── Hidden pixels
+  renderHiddenPixels(R.hiddenResult);
+
+  // ── JPEG
+  renderJpegQuality(R.jpegQuality, R.quantTables);
+
+  // ── ICC
+  renderICC(R.iccInfo, R.metadata);
+}
+
+function renderSummaryCards() {
+  const R = STATE.results;
+  const cards = [];
+
+  const elaLevel = R.elaResult.avg;
+  let elaColor = 'text-green', elaMsg = 'Low — likely unmodified';
+  if (elaLevel >= 5 && elaLevel < 15) { elaColor = 'text-amber'; elaMsg = 'Moderate — possible re-saves'; }
+  if (elaLevel >= 15)                 { elaColor = 'text-red';   elaMsg = 'High — significant artifacts'; }
+
+  cards.push(makeCard('ELA Level', `${elaLevel}`, elaMsg, elaColor));
+
+  const q = R.jpegQuality;
+  if (q !== null) {
+    let qColor = q >= 80 ? 'text-green' : q >= 50 ? 'text-amber' : 'text-red';
+    cards.push(makeCard('JPEG Quality', `${q}%`, 'Estimated from quantization tables', qColor));
+  }
+
+  const hp = R.hiddenResult;
+  if (hp.hasAlpha) {
+    const hpColor = hp.hidden > 0 ? 'text-amber' : 'text-green';
+    const hpMsg   = hp.hidden > 0 ? `${hp.hidden.toLocaleString()} hidden pixels detected` : 'No hidden pixels';
+    cards.push(makeCard('Hidden Pixels', hp.hidden > 0 ? '⚠ Found' : '✓ None', hpMsg, hpColor));
+  } else {
+    cards.push(makeCard('Hidden Pixels', 'N/A', 'No alpha channel', 'text-dim'));
+  }
+
+  const meta = R.metadata;
+  const hasGPS = meta?.gps?.latitude != null || meta?.GPS?.GPSLatitude != null;
+  cards.push(makeCard('GPS Data', hasGPS ? '✓ Present' : '— None',
+    hasGPS ? 'Location embedded in metadata' : 'No GPS coordinates found',
+    hasGPS ? 'text-gold' : 'text-dim'));
+
+  const strTotal = R.rawStrings.length;
+  cards.push(makeCard('Strings Found', strTotal.toLocaleString(), 'Printable ASCII sequences', 'text-steel'));
+
+  const icc = R.metadata?.icc;
+  cards.push(makeCard('ICC Profile', icc ? '✓ Present' : '— None',
+    icc ? (icc.ProfileDescription || icc.ColorSpaceData || '') : 'No color profile found',
+    icc ? 'text-steel' : 'text-dim'));
+
+  document.getElementById('summary-cards').innerHTML = cards.join('');
+}
+
+function makeCard(label, val, sub, valClass) {
+  return `<div class="stat-card">
+    <div class="stat-label">${escH(label)}</div>
+    <div class="stat-val ${valClass}">${escH(String(val))}</div>
+    <div class="stat-sub">${escH(sub)}</div>
+  </div>`;
+}
+
+// ── ELA rendering ──────────────────────────────────────────────
+function renderElaStats(r) {
+  const level = r.avg;
+  let color = '#4fbd7c', interp = 'Low — image likely unmodified';
+  if (level >= 5 && level < 15) { color = '#dba040'; interp = 'Moderate — possible editing or re-saves'; }
+  if (level >= 15)              { color = '#d95454'; interp = 'High — significant JPEG artifacts detected'; }
+
+  document.getElementById('ela-stats').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">AVG ERROR LEVEL</div>
+      <div class="stat-val" style="color:${color}">${r.avg}</div>
+      <div class="stat-sub">${interp}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">MAX ERROR LEVEL</div>
+      <div class="stat-val">${r.max}</div>
+      <div class="stat-sub">Per-channel peak difference</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">IMAGE SIZE</div>
+      <div class="stat-val">${r.W} × ${r.H}</div>
+      <div class="stat-sub">pixels</div>
+    </div>`;
+}
+
+function setupElaScrubber() {
+  const view = document.getElementById('ela-view');
+  const clip = document.getElementById('ela-result-clip');
+  const div  = document.getElementById('ela-divider');
+  let drag = false;
+
+  const setPos = (x) => {
+    const rect = view.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(100, (x - rect.left) / rect.width * 100));
+    clip.style.clipPath = `inset(0 ${100-pct}% 0 0)`;
+    div.style.left = pct + '%';
+  };
+
+  view.addEventListener('mousedown', e => { drag = true; setPos(e.clientX); });
+  window.addEventListener('mouseup',  () => drag = false);
+  window.addEventListener('mousemove',e => { if (drag) setPos(e.clientX); });
+  view.addEventListener('touchstart', e => { drag = true; setPos(e.touches[0].clientX); });
+  window.addEventListener('touchend', () => drag = false);
+  window.addEventListener('touchmove',e => { if (drag) setPos(e.touches[0].clientX); });
+}
+
+function setupElaControls() {
+  const qSlider = document.getElementById('ela-quality');
+  const sSlider = document.getElementById('ela-scale');
+  const qVal = document.getElementById('ela-quality-val');
+  const sVal = document.getElementById('ela-scale-val');
+
+  qSlider.addEventListener('input', () => qVal.textContent = qSlider.value + '%');
+  sSlider.addEventListener('input', () => sVal.textContent = sSlider.value + '×');
+
+  document.getElementById('ela-run').addEventListener('click', async () => {
+    const quality = parseInt(qSlider.value) / 100;
+    const scale   = parseInt(sSlider.value);
+    const loading = document.getElementById('ela-loading');
+    loading.style.display = 'flex';
+    try {
+      const r = await computeELA(STATE.results.imgEl, quality, scale);
+      STATE.elaCanvas = r.canvas;
+      const vc = document.getElementById('ela-canvas');
+      vc.width = r.canvas.width; vc.height = r.canvas.height;
+      vc.getContext('2d').drawImage(r.canvas, 0, 0);
+      renderElaStats(r);
+      STATE.results.elaResult = r;
+    } catch(e) { toast('ELA failed: ' + e.message); }
+    loading.style.display = 'none';
+  });
+
+  document.getElementById('ela-download').style.display = 'inline-block';
+  document.getElementById('ela-download').addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = STATE.elaCanvas.toDataURL('image/png');
+    a.download = STATE.filename.replace(/\.[^.]+$/, '') + '_ela.png';
+    a.click();
+  });
+}
+
+// ── Metadata rendering ────────────────────────────────────────
+function renderMetadata(meta) {
+  if (!meta) { meta = {}; }
+  const rawMeta = Object.entries(meta).filter(([k,v]) => v !== null && v !== undefined);
+
+  // EXIF
+  const exifKeys = ['Make','Model','LensModel','Software','Artist','Copyright',
+    'DateTime','DateTimeOriginal','DateTimeDigitized',
+    'ExposureTime','FNumber','ISO','ISOSpeedRatings','ExposureMode',
+    'Flash','FocalLength','FocalLengthIn35mmFilm','WhiteBalance',
+    'MeteringMode','SceneCaptureType','ExposureProgram','Sharpness',
+    'Saturation','Contrast','ImageWidth','ImageLength','XResolution','YResolution',
+    'ResolutionUnit','Orientation','ColorSpace','SubSecTimeOriginal',
+    'PixelXDimension','PixelYDimension'];
+
+  const exifEntries = rawMeta.filter(([k]) =>
+    exifKeys.some(ek => k.toLowerCase().includes(ek.toLowerCase())) ||
+    k.startsWith('Exif') || k.startsWith('Image') || k.startsWith('Photo'));
+
+  document.getElementById('meta-exif').innerHTML = exifEntries.length
+    ? kvTable(exifEntries)
+    : '<div class="no-data">No EXIF data found in this image.</div>';
+
+  // GPS
+  const gpsEntries = rawMeta.filter(([k]) =>
+    k.toLowerCase().includes('gps') || k.toLowerCase().includes('latitude') ||
+    k.toLowerCase().includes('longitude') || k.toLowerCase().includes('altitude'));
+
+  let gpsHtml = gpsEntries.length
+    ? kvTable(gpsEntries)
+    : '<div class="no-data">No GPS data found.</div>';
+
+  // Add map link if coordinates available
+  const lat = meta?.gps?.latitude ?? meta?.GPS?.GPSLatitude;
+  const lon = meta?.gps?.longitude ?? meta?.GPS?.GPSLongitude;
+  if (lat != null && lon != null) {
+    gpsHtml += `<a class="map-link" href="https://maps.google.com/?q=${lat},${lon}" target="_blank" rel="noopener">
+      🗺 Open in Google Maps (${lat.toFixed(5)}, ${lon.toFixed(5)})
+    </a>`;
+  }
+  document.getElementById('meta-gps').innerHTML = gpsHtml;
+
+  // XMP
+  const xmpEntries = rawMeta.filter(([k]) =>
+    k.toLowerCase().startsWith('xmp') || k.toLowerCase().startsWith('dc:') ||
+    k.toLowerCase().startsWith('photoshop') || k.toLowerCase().startsWith('lr:') ||
+    k.toLowerCase().includes('createdate') || k.toLowerCase().includes('history') ||
+    k.toLowerCase().includes('metadatadate') || k.toLowerCase().includes('toolkitversion'));
+
+  document.getElementById('meta-xmp').innerHTML = xmpEntries.length
+    ? kvTable(xmpEntries)
+    : '<div class="no-data">No XMP data found.</div>';
+
+  // IPTC
+  const iptcEntries = rawMeta.filter(([k]) =>
+    k.toLowerCase().startsWith('iptc') || k.toLowerCase().includes('credit') ||
+    k.toLowerCase().includes('headline') || k.toLowerCase().includes('caption') ||
+    k.toLowerCase().includes('byline') || k.toLowerCase().includes('city') ||
+    k.toLowerCase().includes('country'));
+
+  document.getElementById('meta-iptc').innerHTML = iptcEntries.length
+    ? kvTable(iptcEntries)
+    : '<div class="no-data">No IPTC data found.</div>';
+
+  // All fields
+  document.getElementById('meta-raw').innerHTML = rawMeta.length
+    ? kvTable(rawMeta)
+    : '<div class="no-data">No metadata found.</div>';
+}
+
+function kvTable(entries) {
+  return `<table class="kv-table">${entries.map(([k, v]) => {
+    let valClass = '', valStr = '';
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'object' && !(v instanceof Date)) {
+      try { valStr = JSON.stringify(v, null, 1); }
+      catch(e) { valStr = String(v); }
+    } else if (v instanceof Date) {
+      valStr = v.toISOString();
+    } else {
+      valStr = String(v);
+    }
+    if (valStr.startsWith('http')) { valClass = 'url-val'; valStr = `<a href="${escH(valStr)}" target="_blank">${escH(valStr)}</a>`; }
+    else valStr = escH(valStr);
+    return `<tr><td>${escH(k)}</td><td class="${valClass}">${valStr}</td></tr>`;
+  }).join('')}</table>`;
+}
+
+// ── Digest rendering ──────────────────────────────────────────
+function renderDigest(digest, sigInfo) {
+  const rows = [
+    ['MD5', digest.md5],
+    ['SHA-1', digest.sha1],
+    ['SHA-256', digest.sha256],
+    ['SHA-512', digest.sha512],
+  ];
+  const html = rows.map(([label, val]) => `
+    <div class="hash-row">
+      <div class="hash-label">${label}</div>
+      <div class="hash-val">${escH(val)}</div>
+      <button class="copy-btn" onclick="copyText('${val}', this)">Copy</button>
+    </div>`).join('');
+
+  const sigHtml = sigInfo ? `
+    <table class="kv-table" style="margin-top:8px;">
+      <tr><td>Detected format</td><td>${escH(sigInfo.format)}</td></tr>
+      <tr><td>Magic bytes (hex)</td><td class="mono">${escH(sigInfo.hex)}</td></tr>
+    </table>` : '';
+
+  document.getElementById('digest-content').innerHTML = html;
+  document.getElementById('file-sig').innerHTML = sigHtml;
+}
+
+// ── String rendering ──────────────────────────────────────────
+function renderStrings(cat, allStrings) {
+  const sections = [
+    { key: 'urls',      label: 'URLs',              cls: 'url-item' },
+    { key: 'software',  label: 'Software Signatures', cls: 'sw-item' },
+    { key: 'dates',     label: 'Date Strings',       cls: 'date-item' },
+    { key: 'paths',     label: 'File Paths',         cls: '' },
+    { key: 'emails',    label: 'Email Addresses',    cls: 'url-item' },
+    { key: 'copyright', label: 'Copyright',          cls: '' },
+    { key: 'gps',       label: 'GPS Strings',        cls: '' },
+    { key: 'other',     label: 'Other Strings',      cls: '' },
+  ];
+
+  const renderSection = (filter='') => {
+    const f = filter.toLowerCase();
+    let html = `<div class="text-dim" style="font-size:.78rem;margin-bottom:16px;">
+      ${allStrings.length.toLocaleString()} unique strings extracted</div>`;
+    for (const { key, label, cls } of sections) {
+      const items = (cat[key] || []).filter(s => !f || s.toLowerCase().includes(f));
+      if (!items.length) continue;
+      html += `<div class="tag-group">
+        <div class="tag-group-title">${label} <span class="count-badge">${items.length}</span></div>
+        ${items.slice(0, 40).map(s =>
+          `<div class="str-item ${cls}">${escH(s.slice(0,160))}</div>`
+        ).join('')}
+        ${items.length > 40 ? `<div class="str-more">… ${items.length-40} more</div>` : ''}
+      </div>`;
+    }
+    return html;
+  };
+
+  document.getElementById('strings-content').innerHTML = renderSection();
+
+  document.getElementById('str-search').addEventListener('input', e => {
+    document.getElementById('strings-content').innerHTML = renderSection(e.target.value);
+  });
+}
+
+// ── Hidden pixels rendering ───────────────────────────────────
+function renderHiddenPixels(r) {
+  const el = document.getElementById('hidden-content');
+  if (!r.hasAlpha) {
+    el.innerHTML = `<div class="no-data">
+      This image has no alpha (transparency) channel.<br>
+      Hidden pixel analysis requires an image with transparency (RGBA PNG, etc.).
+    </div>`;
+    return;
+  }
+
+  let html = `<table class="kv-table" style="max-width:480px;">
+    <tr><td>Total pixels</td><td>${r.totalPixels?.toLocaleString() || '—'}</td></tr>
+    <tr><td>Transparent pixels (α=0)</td><td>${r.transparent.toLocaleString()}</td></tr>
+    <tr><td>Semi-transparent (0 &lt; α &lt; 255)</td><td>${r.semi.toLocaleString()}</td></tr>
+    <tr><td>Hidden pixels (α=0, RGB≠0)</td>
+        <td class="${r.hidden > 0 ? 'warn-val' : 'ok-val'}">
+          ${r.hidden.toLocaleString()} ${r.hidden > 0 ? '⚠' : '✓'}
+        </td></tr>
+  </table>`;
+
+  if (r.hidden > 0) {
+    html += `<div style="margin-top:16px;" class="text-amber">
+      ⚠ Non-zero RGB values found under fully transparent regions.
+      This may reveal the software used to create or edit the image,
+      even if metadata has been stripped.
+    </div>`;
+
+    if (r.topColors.length) {
+      html += `<div class="tag-group" style="margin-top:16px;">
+        <div class="tag-group-title">Top Hidden Pixel Colors</div>
+        ${r.topColors.map(([color, count]) =>
+          `<div class="str-item">
+            <span class="hp-color-dot" style="background:${color}"></span>
+            <span class="mono">${color}</span>
+            <span class="text-dim" style="margin-left:12px;">× ${count.toLocaleString()}</span>
+          </div>`
+        ).join('')}
+      </div>`;
+    }
+
+    if (r.visCanvas) {
+      html += `<div style="margin-top:16px;" class="section-title">Hidden Pixel Visualization</div>
+        <p style="font-size:.78rem;color:var(--text-dim);margin-bottom:8px;">
+          Colored pixels = hidden data &nbsp;·&nbsp; Dark background = normal transparent/opaque regions</p>`;
+      el.innerHTML = html;
+      const wrap = document.createElement('div');
+      wrap.className = 'hp-canvas-wrap';
+      wrap.style.marginTop = '8px';
+      wrap.appendChild(r.visCanvas);
+      el.appendChild(wrap);
+      return;
+    }
+  } else {
+    html += `<div style="margin-top:12px;" class="text-green">
+      ✓ No hidden pixels detected. All transparent regions contain zero RGB values.
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+// ── JPEG quality rendering ────────────────────────────────────
+function renderJpegQuality(q, tables) {
+  const el = document.getElementById('jpeg-content');
+  if (q === null || !tables[0]) {
+    el.innerHTML = `<div class="no-data">
+      No JPEG quantization tables found.<br>
+      This may be a PNG, WebP (lossless), or other non-JPEG format.
+      JPEG quality estimation requires a JPEG file.
+    </div>`;
+    return;
+  }
+
+  const qColor = q >= 80 ? 'var(--green)' : q >= 50 ? 'var(--amber)' : 'var(--red)';
+  const barPct = q + '%';
+  const tableHtml = (tbl, label) => {
+    if (!tbl) return '';
+    const cells = tbl.map(v => {
+      const heat = Math.min(255, Math.floor(v / 255 * 180));
+      return `<td style="color:rgb(${140+heat},${180-heat/2},${140-heat/2})">${v}</td>`;
+    });
+    let rows = '';
+    for (let r=0; r<8; r++) rows += '<tr>' + cells.slice(r*8,(r+1)*8).join('') + '</tr>';
+    return `<div style="margin-top:20px;" class="section-title">${label}</div>
+      <table class="quant-grid">${rows}</table>`;
+  };
+
+  el.innerHTML = `
+    <table class="kv-table" style="max-width:420px;">
+      <tr><td>Estimated quality</td>
+          <td class="highlight" style="color:${qColor};font-size:1.2rem;">${q}%</td></tr>
+      <tr><td>Quantization tables</td><td>${Object.keys(tables).length} found</td></tr>
+    </table>
+    <div style="margin-top:14px;max-width:320px;">
+      <div style="font-size:.72rem;color:var(--text-dim);margin-bottom:6px;">Quality level</div>
+      <div class="q-bar-wrap">
+        <div class="q-bar" style="width:${barPct};background:${qColor};"></div>
+      </div>
+    </div>
+    <p style="font-size:.78rem;color:var(--text-dim);margin-top:14px;max-width:580px;">
+      Quality is estimated by comparing the image's quantization coefficients against the
+      standard IJG (libjpeg) table for Q=50. Values ≥ 80% indicate professional-grade
+      compression; values &lt; 60% suggest aggressive compression or multiple re-saves.
+    </p>
+    ${tableHtml(tables[0], 'Luminance Table (Y channel)')}
+    ${tableHtml(tables[1], 'Chrominance Table (Cb/Cr channels)')}`;
+}
+
+// ── ICC rendering ──────────────────────────────────────────────
+function renderICC(iccInfo, meta) {
+  const el = document.getElementById('icc-content');
+  // exifr parses icc data into meta.icc as an object
+  const icc = meta?.icc;
+  if (!icc) {
+    el.innerHTML = `<div class="no-data">
+      No ICC color profile found in this image.
+      Many JPEG files from phones or web sources have ICC profiles stripped.
+    </div>`;
+    return;
+  }
+
+  // exifr gives us keys like ProfileDescription, ColorSpaceData, etc.
+  const rows = Object.entries(icc)
+    .filter(([k,v]) => v !== null && v !== undefined && typeof v !== 'object')
+    .map(([k,v]) => [k, String(v)]);
+
+  const desc = icc.ProfileDescription || icc.profileDescription || '—';
+  el.innerHTML = `
+    <div class="icc-badge">ICC Color Profile</div>
+    <div style="margin-bottom:8px;" class="text-gold" style="font-size:1rem;">${escH(desc)}</div>
+    ${rows.length ? kvTable(rows) : '<div class="no-data">ICC profile present but fields not parsed.</div>'}`;
+}
+
+// ── Tab switching ─────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// Metadata sub-tabs
+document.querySelectorAll('.meta-tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.meta-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.meta-sub').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('meta-' + btn.dataset.meta).classList.add('active');
+  });
+});
+
+// ── View switching ─────────────────────────────────────────────
+function switchView(view) {
+  document.getElementById('upload-zone').style.display    = view === 'upload' ? '' : 'none';
+  document.getElementById('analysis-panel').style.display = view === 'analysis' ? '' : 'none';
+}
+
+document.getElementById('reset-btn').addEventListener('click', () => {
+  if (STATE.blobUrl) URL.revokeObjectURL(STATE.blobUrl);
+  STATE = { arrayBuffer:null, filename:'', blobUrl:'', results:{}, elaCanvas:null, allStrings:[] };
+  document.getElementById('file-input').value = '';
+  document.getElementById('url-input').value = '';
+  switchView('upload');
+  // Reset tabs
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', i===0));
+  document.querySelectorAll('.tab-panel').forEach((p,i) => p.classList.toggle('active', i===0));
+});
+
+// ── Export JSON ────────────────────────────────────────────────
+document.getElementById('export-btn').addEventListener('click', () => {
+  const R = STATE.results;
+  const out = {
+    filename: R.filename,
+    dimensions: R.dims,
+    sizeBytes: R.sizeBytes,
+    fileSignature: R.sigInfo,
+    digest: R.digest,
+    jpegQuality: R.jpegQuality,
+    elaAvgLevel: R.elaResult?.avg,
+    elaMaxLevel: R.elaResult?.max,
+    hiddenPixels: {
+      hasAlpha: R.hiddenResult?.hasAlpha,
+      hiddenCount: R.hiddenResult?.hidden,
+      semiTransparent: R.hiddenResult?.semi,
+      topColors: R.hiddenResult?.topColors,
+    },
+    stringsTotal: R.rawStrings?.length,
+    stringsCategories: {
+      urls: R.strCat?.urls?.length,
+      software: R.strCat?.software?.length,
+      dates: R.strCat?.dates?.length,
+    },
+    timestamp: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (R.filename || 'analysis').replace(/\.[^.]+$/, '') + '_phantomlens.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+// ── Utility ────────────────────────────────────────────────────
+function escH(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+  return (n/1024/1024).toFixed(2) + ' MB';
+}
+
+// ── Init ───────────────────────────────────────────────────────
+switchView('upload');
+</script>
+</body>
+</html>
