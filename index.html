@@ -252,6 +252,30 @@ main { max-width: 1380px; margin: 0 auto; padding: 32px 24px; }
   color: var(--text-dim); font-size: .85rem; font-style: italic;
   padding: 24px 0;
 }
+
+/* ── Forensic highlights (metadata tab) ──────────────────────── */
+.forensic-highlights {
+  background: var(--steel-dim);
+  border: 1px solid var(--steel);
+  border-radius: var(--r2);
+  padding: 16px 18px;
+  margin-bottom: 22px;
+}
+.fh-title {
+  font-size: .72rem; font-weight: 600; color: var(--gold);
+  letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px;
+}
+.fh-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px 24px;
+}
+.fh-item {
+  display: flex; justify-content: space-between; gap: 12px;
+  border-bottom: 1px solid var(--border2); padding: 5px 0; font-size: .82rem;
+}
+.fh-key { color: var(--text-dim); white-space: nowrap; }
+.fh-val { color: var(--text); font-family: var(--mono); font-size: .78rem; text-align: right; word-break: break-word; }
+.fh-note { font-size: .74rem; color: var(--text-dim); margin-top: 12px; line-height: 1.5; }
 .mono-block {
   font: .78rem var(--mono); color: var(--text-dim);
   word-break: break-all; line-height: 2;
@@ -495,7 +519,8 @@ main { max-width: 1380px; margin: 0 auto; padding: 32px 24px; }
     <p>Client-side forensic image analysis — ELA, metadata, hidden pixels, JPEG quality,
        string extraction, ICC profiles, and more. Nothing leaves your browser.</p>
 
-    <div class="drop-card" id="drop-card">
+    <div class="drop-card" id="drop-card" role="button" tabindex="0"
+         aria-label="Upload an image for forensic analysis">
       <div class="drop-icon">🔍</div>
       <div class="drop-text">Drop an image here, or click to upload</div>
       <div class="drop-sub">JPEG · PNG · WebP · HEIC · AVIF</div>
@@ -699,6 +724,9 @@ let STATE = {
   allStrings: [],
 };
 
+// Scrubber state — window-level listeners are bound once; `drag`/`setPos` mutate.
+const SCRUB = { drag: false, bound: false, setPos: null };
+
 // ── Font size controls ─────────────────────────────────────────
 document.querySelectorAll('.fs-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -752,6 +780,9 @@ function hideProgress() {
 // ── File / URL loading ─────────────────────────────────────────
 document.getElementById('drop-card').addEventListener('click', () => {
   document.getElementById('file-input').click();
+});
+document.getElementById('drop-card').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); document.getElementById('file-input').click(); }
 });
 document.getElementById('file-input').addEventListener('change', e => {
   if (e.target.files[0]) loadFile(e.target.files[0]);
@@ -947,7 +978,10 @@ function extractStrings(buf, minLen = 4) {
 
 function categorizeStrings(strings) {
   const cat = { urls:[], emails:[], software:[], dates:[], paths:[], copyright:[], gps:[], other:[] };
-  const _url   = /https?:\/\/[^\s<>"]{4,}/g;
+  // NOTE: the test regex must NOT carry the /g flag — a global regex is stateful
+  // (lastIndex persists between .test() calls) and would skip every other match.
+  const _url   = /https?:\/\/[^\s<>"]{4,}/;
+  const _urlG  = /https?:\/\/[^\s<>"]{4,}/g;   // separate global copy for matchAll
   const _email = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/;
   const _date  = /\d{4}[:/.\-]\d{2}[:/.\-]\d{2}/;
   const _path  = /(?:\/[a-zA-Z0-9._\-]{2,}){2,}|[A-Z]:\\[^\n]{3,}/;
@@ -957,7 +991,7 @@ function categorizeStrings(strings) {
 
   for (const s of strings) {
     if (_url.test(s)) {
-      for (const u of s.matchAll(/https?:\/\/[^\s<>"]{4,}/g)) cat.urls.push(u[0]);
+      for (const u of s.matchAll(_urlG)) cat.urls.push(u[0]);
     } else if (_email.test(s)) {
       cat.emails.push(s);
     } else if (_date.test(s) && s.length < 60) {
@@ -1355,7 +1389,6 @@ function setupElaScrubber() {
   const view = document.getElementById('ela-view');
   const clip = document.getElementById('ela-result-clip');
   const div  = document.getElementById('ela-divider');
-  let drag = false;
 
   const setPos = (x) => {
     const rect = view.getBoundingClientRect();
@@ -1364,12 +1397,19 @@ function setupElaScrubber() {
     div.style.left = pct + '%';
   };
 
-  view.addEventListener('mousedown', e => { drag = true; setPos(e.clientX); });
-  window.addEventListener('mouseup',  () => drag = false);
-  window.addEventListener('mousemove',e => { if (drag) setPos(e.clientX); });
-  view.addEventListener('touchstart', e => { drag = true; setPos(e.touches[0].clientX); });
-  window.addEventListener('touchend', () => drag = false);
-  window.addEventListener('touchmove',e => { if (drag) setPos(e.touches[0].clientX); });
+  // View-level handlers: assignment replaces any previous binding (no stacking).
+  view.onmousedown  = e => { SCRUB.drag = true; setPos(e.clientX); };
+  view.ontouchstart = e => { SCRUB.drag = true; setPos(e.touches[0].clientX); };
+  SCRUB.setPos = setPos;
+
+  // Window-level handlers bound exactly once for the page lifetime.
+  if (!SCRUB.bound) {
+    SCRUB.bound = true;
+    window.addEventListener('mouseup',  () => SCRUB.drag = false);
+    window.addEventListener('touchend', () => SCRUB.drag = false);
+    window.addEventListener('mousemove', e => { if (SCRUB.drag && SCRUB.setPos) SCRUB.setPos(e.clientX); });
+    window.addEventListener('touchmove', e => { if (SCRUB.drag && SCRUB.setPos) SCRUB.setPos(e.touches[0].clientX); });
+  }
 }
 
 function setupElaControls() {
@@ -1378,10 +1418,10 @@ function setupElaControls() {
   const qVal = document.getElementById('ela-quality-val');
   const sVal = document.getElementById('ela-scale-val');
 
-  qSlider.addEventListener('input', () => qVal.textContent = qSlider.value + '%');
-  sSlider.addEventListener('input', () => sVal.textContent = sSlider.value + '×');
+  qSlider.oninput = () => qVal.textContent = qSlider.value + '%';
+  sSlider.oninput = () => sVal.textContent = sSlider.value + '×';
 
-  document.getElementById('ela-run').addEventListener('click', async () => {
+  document.getElementById('ela-run').onclick = async () => {
     const quality = parseInt(qSlider.value) / 100;
     const scale   = parseInt(sSlider.value);
     const loading = document.getElementById('ela-loading');
@@ -1396,85 +1436,125 @@ function setupElaControls() {
       STATE.results.elaResult = r;
     } catch(e) { toast('ELA failed: ' + e.message); }
     loading.style.display = 'none';
-  });
+  };
 
-  document.getElementById('ela-download').style.display = 'inline-block';
-  document.getElementById('ela-download').addEventListener('click', () => {
+  const dl = document.getElementById('ela-download');
+  dl.style.display = 'inline-block';
+  dl.onclick = () => {
     const a = document.createElement('a');
     a.href = STATE.elaCanvas.toDataURL('image/png');
     a.download = STATE.filename.replace(/\.[^.]+$/, '') + '_ela.png';
     a.click();
-  });
+  };
 }
 
 // ── Metadata rendering ────────────────────────────────────────
+// Flatten a group object into [key, value] entries, skipping nested objects/empties.
+function groupEntries(obj) {
+  if (!obj || typeof obj !== 'object') return [];
+  return Object.entries(obj).filter(([k, v]) => {
+    if (v === null || v === undefined) return false;
+    if (typeof v === 'object' && !(v instanceof Date) && !Array.isArray(v)) {
+      // keep small flat sub-objects out of the table; they go to the raw dump
+      return false;
+    }
+    return true;
+  });
+}
+
 function renderMetadata(meta) {
-  if (!meta) { meta = {}; }
-  const rawMeta = Object.entries(meta).filter(([k,v]) => v !== null && v !== undefined);
+  if (!meta || typeof meta !== 'object') meta = {};
 
-  // EXIF
-  const exifKeys = ['Make','Model','LensModel','Software','Artist','Copyright',
-    'DateTime','DateTimeOriginal','DateTimeDigitized',
-    'ExposureTime','FNumber','ISO','ISOSpeedRatings','ExposureMode',
-    'Flash','FocalLength','FocalLengthIn35mmFilm','WhiteBalance',
-    'MeteringMode','SceneCaptureType','ExposureProgram','Sharpness',
-    'Saturation','Contrast','ImageWidth','ImageLength','XResolution','YResolution',
-    'ResolutionUnit','Orientation','ColorSpace','SubSecTimeOriginal',
-    'PixelXDimension','PixelYDimension'];
+  // exifr is called with mergeOutput:false, so `meta` is grouped by segment:
+  //   ifd0 / exif / gps / interop / thumbnail / iptc / xmp / icc / jfif / ihdr
+  const G = (name) => meta[name] || null;
 
-  const exifEntries = rawMeta.filter(([k]) =>
-    exifKeys.some(ek => k.toLowerCase().includes(ek.toLowerCase())) ||
-    k.startsWith('Exif') || k.startsWith('Image') || k.startsWith('Photo'));
+  // ── EXIF (technical / camera) ── combine the IFD groups
+  const exifGroups = ['ifd0', 'exif', 'interop', 'thumbnail', 'jfif', 'ihdr'];
+  let exifEntries = [];
+  exifGroups.forEach(g => { exifEntries = exifEntries.concat(groupEntries(G(g))); });
 
-  document.getElementById('meta-exif').innerHTML = exifEntries.length
-    ? kvTable(exifEntries)
-    : '<div class="no-data">No EXIF data found in this image.</div>';
+  // Forensic highlights — surface the fields that most often expose
+  // editing software, capture vs. edit date mismatches, and authorship.
+  const flat = {};
+  exifGroups.concat(['xmp']).forEach(g => {
+    const grp = G(g);
+    if (grp) for (const [k, v] of Object.entries(grp)) if (!(k in flat)) flat[k] = v;
+  });
+  const pick = (...names) => {
+    for (const n of names) {
+      const hit = Object.keys(flat).find(k => k.toLowerCase() === n.toLowerCase());
+      if (hit != null && flat[hit] != null && flat[hit] !== '') return [hit, flat[hit]];
+    }
+    return null;
+  };
+  const highlightDefs = [
+    pick('Software', 'CreatorTool', 'HistorySoftwareAgent'),
+    pick('Make'), pick('Model'), pick('LensModel'),
+    pick('Artist', 'Creator', 'byline'),
+    pick('Copyright', 'Rights'),
+    pick('DateTimeOriginal'), pick('CreateDate', 'DateTimeDigitized'),
+    pick('ModifyDate', 'DateTime'), pick('MetadataDate'),
+  ].filter(Boolean);
 
-  // GPS
-  const gpsEntries = rawMeta.filter(([k]) =>
-    k.toLowerCase().includes('gps') || k.toLowerCase().includes('latitude') ||
-    k.toLowerCase().includes('longitude') || k.toLowerCase().includes('altitude'));
+  let highlightHtml = '';
+  if (highlightDefs.length) {
+    const fmt = (v) => v instanceof Date ? v.toISOString() : String(v);
+    highlightHtml = `<div class="forensic-highlights">
+      <div class="fh-title">Forensic Highlights</div>
+      <div class="fh-grid">${highlightDefs.map(([k, v]) =>
+        `<div class="fh-item"><span class="fh-key">${escH(k)}</span><span class="fh-val">${escH(fmt(v))}</span></div>`
+      ).join('')}</div>
+      <div class="fh-note">Compare capture vs. modify dates and the software field — mismatches or design-app signatures (Photoshop, Procreate, Illustrator) are common tells.</div>
+    </div>`;
+  }
 
+  document.getElementById('meta-exif').innerHTML =
+    (highlightHtml || '') + (exifEntries.length
+      ? kvTable(exifEntries)
+      : (highlightHtml ? '' : '<div class="no-data">No EXIF data found in this image.</div>'));
+
+  // ── GPS ──
+  const gps = G('gps');
+  const gpsEntries = groupEntries(gps);
   let gpsHtml = gpsEntries.length
     ? kvTable(gpsEntries)
     : '<div class="no-data">No GPS data found.</div>';
-
-  // Add map link if coordinates available
-  const lat = meta?.gps?.latitude ?? meta?.GPS?.GPSLatitude;
-  const lon = meta?.gps?.longitude ?? meta?.GPS?.GPSLongitude;
-  if (lat != null && lon != null) {
+  const lat = gps?.latitude ?? gps?.GPSLatitude;
+  const lon = gps?.longitude ?? gps?.GPSLongitude;
+  if (typeof lat === 'number' && typeof lon === 'number') {
     gpsHtml += `<a class="map-link" href="https://maps.google.com/?q=${lat},${lon}" target="_blank" rel="noopener">
       🗺 Open in Google Maps (${lat.toFixed(5)}, ${lon.toFixed(5)})
     </a>`;
   }
   document.getElementById('meta-gps').innerHTML = gpsHtml;
 
-  // XMP
-  const xmpEntries = rawMeta.filter(([k]) =>
-    k.toLowerCase().startsWith('xmp') || k.toLowerCase().startsWith('dc:') ||
-    k.toLowerCase().startsWith('photoshop') || k.toLowerCase().startsWith('lr:') ||
-    k.toLowerCase().includes('createdate') || k.toLowerCase().includes('history') ||
-    k.toLowerCase().includes('metadatadate') || k.toLowerCase().includes('toolkitversion'));
-
+  // ── XMP ──
+  const xmpEntries = groupEntries(G('xmp'));
   document.getElementById('meta-xmp').innerHTML = xmpEntries.length
     ? kvTable(xmpEntries)
     : '<div class="no-data">No XMP data found.</div>';
 
-  // IPTC
-  const iptcEntries = rawMeta.filter(([k]) =>
-    k.toLowerCase().startsWith('iptc') || k.toLowerCase().includes('credit') ||
-    k.toLowerCase().includes('headline') || k.toLowerCase().includes('caption') ||
-    k.toLowerCase().includes('byline') || k.toLowerCase().includes('city') ||
-    k.toLowerCase().includes('country'));
-
+  // ── IPTC ──
+  const iptcEntries = groupEntries(G('iptc'));
   document.getElementById('meta-iptc').innerHTML = iptcEntries.length
     ? kvTable(iptcEntries)
     : '<div class="no-data">No IPTC data found.</div>';
 
-  // All fields
-  document.getElementById('meta-raw').innerHTML = rawMeta.length
-    ? kvTable(rawMeta)
-    : '<div class="no-data">No metadata found.</div>';
+  // ── All fields (every group, prefixed so origin is clear) ──
+  let allEntries = [];
+  for (const [groupName, groupVal] of Object.entries(meta)) {
+    if (!groupVal || typeof groupVal !== 'object') {
+      allEntries.push([groupName, groupVal]);
+      continue;
+    }
+    for (const [k, v] of groupEntries(groupVal)) {
+      allEntries.push([`${groupName}:${k}`, v]);
+    }
+  }
+  document.getElementById('meta-raw').innerHTML = allEntries.length
+    ? kvTable(allEntries)
+    : '<div class="no-data">No metadata found. The image may have been stripped, or it is a format exifr cannot parse.</div>';
 }
 
 function kvTable(entries) {
@@ -1553,9 +1633,9 @@ function renderStrings(cat, allStrings) {
 
   document.getElementById('strings-content').innerHTML = renderSection();
 
-  document.getElementById('str-search').addEventListener('input', e => {
+  document.getElementById('str-search').oninput = e => {
     document.getElementById('strings-content').innerHTML = renderSection(e.target.value);
-  });
+  };
 }
 
 // ── Hidden pixels rendering ───────────────────────────────────
@@ -1714,8 +1794,13 @@ document.querySelectorAll('.meta-tab').forEach(btn => {
 
 // ── View switching ─────────────────────────────────────────────
 function switchView(view) {
-  document.getElementById('upload-zone').style.display    = view === 'upload' ? '' : 'none';
-  document.getElementById('analysis-panel').style.display = view === 'analysis' ? '' : 'none';
+  // NOTE: must use explicit display values. Setting style.display = '' only
+  // clears the inline style and lets the stylesheet win — and the stylesheet
+  // sets #analysis-panel { display:none }, which previously hid BOTH panels
+  // and produced a black screen after upload.
+  document.getElementById('upload-zone').style.display    = view === 'upload'    ? 'block' : 'none';
+  document.getElementById('analysis-panel').style.display = view === 'analysis' ? 'block' : 'none';
+  if (view === 'analysis') window.scrollTo({ top: 0, behavior: 'instant' in document.documentElement.style ? 'instant' : 'auto' });
 }
 
 document.getElementById('reset-btn').addEventListener('click', () => {
@@ -1732,26 +1817,52 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 // ── Export JSON ────────────────────────────────────────────────
 document.getElementById('export-btn').addEventListener('click', () => {
   const R = STATE.results;
+  // Serialize metadata safely: Dates → ISO, drop binary/circular blobs.
+  const safeMeta = (() => {
+    try {
+      return JSON.parse(JSON.stringify(R.metadata || {}, (k, v) => {
+        if (v instanceof Date) return v.toISOString();
+        if (v && typeof v === 'object' && (v.buffer || v.BYTES_PER_ELEMENT)) return '[binary]';
+        return v;
+      }));
+    } catch (e) { return { error: 'metadata not serializable' }; }
+  })();
+
   const out = {
+    tool: 'PhantomLens',
     filename: R.filename,
     dimensions: R.dims,
     sizeBytes: R.sizeBytes,
     fileSignature: R.sigInfo,
     digest: R.digest,
     jpegQuality: R.jpegQuality,
-    elaAvgLevel: R.elaResult?.avg,
-    elaMaxLevel: R.elaResult?.max,
+    quantTableIds: R.quantTables ? Object.keys(R.quantTables) : [],
+    ela: {
+      avgLevel: R.elaResult?.avg,
+      maxLevel: R.elaResult?.max,
+      resaveQuality: 0.95,
+      amplification: 10,
+    },
     hiddenPixels: {
       hasAlpha: R.hiddenResult?.hasAlpha,
+      transparent: R.hiddenResult?.transparent,
       hiddenCount: R.hiddenResult?.hidden,
       semiTransparent: R.hiddenResult?.semi,
       topColors: R.hiddenResult?.topColors,
     },
-    stringsTotal: R.rawStrings?.length,
-    stringsCategories: {
-      urls: R.strCat?.urls?.length,
-      software: R.strCat?.software?.length,
-      dates: R.strCat?.dates?.length,
+    icc: R.metadata?.icc || null,
+    metadata: safeMeta,
+    strings: {
+      total: R.rawStrings?.length,
+      categories: {
+        urls: R.strCat?.urls || [],
+        software: R.strCat?.software || [],
+        dates: R.strCat?.dates || [],
+        paths: R.strCat?.paths || [],
+        emails: R.strCat?.emails || [],
+        copyright: R.strCat?.copyright || [],
+        gps: R.strCat?.gps || [],
+      },
     },
     timestamp: new Date().toISOString(),
   };
